@@ -10,7 +10,7 @@ Decision Tree, Gradient Boosting (XGBoost), k-fold cross validation
 Training set of 10k+ records
 Test set of 4k+ records
 
-## Data Dictionary
+## Data Dictionary 1
 
 | Name | Description |
 | --- | --- |
@@ -25,3 +25,29 @@ Test set of 4k+ records
 | NUM_FLOORS | Number of levels in the structure located on the parcel |
 | STRUCTURE_CLASS | Structural classification of commercial building |
 | R_BLDG_STYL | Residential buiilding style |
+| R_ROOF_TYP | Structure roof type |
+| R_EXT_FIN | Structure exterior finish |
+| R_TOTAL_RMS |	Total number of rooms in the structure |
+| R_BDRMS	| Total number of bedrooms in the structure |
+| R_FULL_BTH | Total number of full baths in the structure |
+| R_HALF_BTH | Total number of half baths in the structure |
+| R_BTH_STYLE | Residential bath style |
+| R_KITCH |	Total number of kitchens in the structure |
+| R_KITCH_STYLE |	Residential kitchen style |
+| R_HEAT_TYP | Structure heat type |
+| R_AC | Indicates if the structure has air conditioning (A/C) |
+| R_FPLACE | Total number of fireplaces in the structure |
+| R_EXT_CND | Residential exterior condition |
+| R_OVRALL_CND | Residential overall condition |
+| R_INT_CND |	Residential interior condition |
+| R_INT_FIN |	Residential interior finish |
+| R_VIEW | Residential view |
+
+## Data Dictionary 2
+| Name | Description |
+| --- | --- |
+| ZIP |	ZIP CODE |
+| POPULATION | Population of people in the ZIP code  |
+| POP_DENSITY |	People per square mile  |
+| MEDIAN_INCOME |	Median Income of the residence of that zip code   |
+| City_State | City Name and State  |
