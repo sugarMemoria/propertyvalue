@@ -1,0 +1,239 @@
+---
+title: "Project 2 Helper"
+output: html_notebook
+---
+
+# load pacakges 
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(skimr)
+library(vip)
+library(parallel)
+library(doParallel)
+library(xgboost)
+```
+
+# load the data, clean the names, make factors 
+
+```{r}
+
+df <-read_csv("../Week_2/boston_train.csv") %>%
+  clean_names() %>%
+  mutate_if(is.character,factor)
+
+holdout <-read_csv("../Week_2/boston_holdout.csv") %>%
+  clean_names() %>%
+  mutate_if(is.character,factor)
+
+head(df)
+```
+
+# train/test split & K-fold
+
+here we want to split our data into 70/30 training to test 
+THEN apply k-fold to our training data
+you'll use the kfold grid search to find optimal parameters, which you will then apply a final fit 
+
+
+```{r}
+# -- set a random seed for repeatablity 
+set.seed(42)
+
+# -- train test split 
+train_test_spit<- initial_split(df, prop = 0.7)
+
+train <- training(train_test_spit)
+test  <- testing(train_test_spit)
+
+# -- k-fold your training data 
+train_cv_folds <- vfold_cv(train, v=5)
+
+sprintf("remeber you are using folds to find parameters but still need to evaluate on train and test after you've found your hyper parameters")
+sprintf("Train PCT  : %1.2f%%", nrow(train)/ nrow(df) * 100)
+sprintf("Test  PCT  : %1.2f%%", nrow(test)/ nrow(df) * 100)
+sprintf("Kfold Count: %d", nrow(train_cv_folds))
+
+
+```
+# Define Recipe, Models and Workflows 
+define your RF and XGB models
+```{r}
+# -- define recipe 
+bos_recipe <- 
+  recipe(av_total ~ ., data=train) %>%
+  step_rm(pid) %>%
+  step_medianimpute(all_numeric(), -all_outcomes()) %>%
+  step_unknown(all_nominal(), -all_outcomes()) %>%
+  step_dummy(all_nominal(), -all_outcomes())
+
+# -- define models 
+xgb_model <- boost_tree(
+    trees  = tune(),
+    learn_rate = tune()) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+rf_model <- rand_forest(
+  trees = tune(),
+  min_n = tune()) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("regression")
+
+# -- define workflows 
+xgb_workflow <- workflow() %>%
+  add_recipe(bos_recipe) %>%
+  add_model(xgb_model)
+
+rf_workflow <- workflow() %>%
+  add_recipe(bos_recipe)  %>%
+  add_model(rf_model)
+```
+
+# Setup tuning grids 
+
+Make sure you don't have thousands of experiments generated, here i just generate 4 experiments 
+
+```{r}
+# --  xgb grid
+xgb_tune_grid <- grid_regular(trees(c(100,200)),
+                          learn_rate(),
+                          levels = 2)
+
+print(xgb_tune_grid)
+
+# -- rf grid 
+rf_tune_grid <- grid_regular(trees(c(100,200)),
+                          min_n(),
+                          levels = 2)
+
+print(rf_tune_grid)
+
+
+```
+
+# -- 
+```{r}
+all_cores <- detectCores(logical = TRUE)
+sprintf("# of Logical Cores: %d", all_cores)
+
+cl <- makeCluster(all_cores)
+
+registerDoParallel(cl)
+
+# -- K-Fold XGB  
+xgb_tuning_results <- 
+  xgb_workflow %>% 
+  tune_grid(
+    resamples = train_cv_folds,
+    grid = xgb_tune_grid,
+    #control = control_resamples(save_pred = TRUE)
+    )
+
+# -- k-fold RF
+rf_tuning_results <- 
+  rf_workflow %>% 
+  tune_grid(
+    resamples = train_cv_folds,
+    grid = rf_tune_grid,
+    #control = control_resamples(save_pred = TRUE)
+    )
+
+
+# -- evaluate your Hyper Parameter K-Folds
+xgb_tuning_results %>% 
+  collect_metrics() %>%
+  mutate_if(is.numeric, round,3) %>% 
+  pivot_wider(names_from = .metric, values_from=c(mean, std_err)) 
+  
+xgb_tuning_results %>%
+  show_best("rmse") %>%
+  print()
+
+xgb_best_rmse <- xgb_tuning_results %>%
+  select_best("rmse") 
+
+rf_tuning_results %>% 
+  collect_metrics() %>%
+  mutate_if(is.numeric, round,3) %>% 
+  pivot_wider(names_from = .metric, values_from=c(mean, std_err)) 
+
+rf_tuning_results %>%
+  show_best("rmse") %>%
+  print()
+
+rf_best_rmse <- rf_tuning_results %>%
+  select_best("rmse") 
+
+print(xgb_best_rmse)
+print(rf_best_rmse)
+
+# -- finalize XBG workflow 
+xgb_final_wf <- 
+  xgb_workflow %>% 
+  finalize_workflow(xgb_best_rmse)
+
+xgb_final_fit  <- 
+  xgb_final_wf %>%
+  fit(data = train) 
+
+# -- finalize RF workflow 
+rf_final_wf <- 
+  rf_workflow %>% 
+  finalize_workflow(rf_best_rmse)
+
+rf_final_fit  <- 
+  rf_final_wf %>%
+  fit(data = train) 
+
+
+```
+
+
+#top importance variables
+```{r}
+xgb_final_fit %>% 
+  pull_workflow_fit() %>% 
+  vip(40) + labs(title = "XGB var importance")
+
+rf_final_fit %>% 
+  pull_workflow_fit() %>% 
+  vip(40)+ labs(title = "RF var importance")
+```
+
+```{r}
+
+regression_eval <- function(model){
+
+# -- score training  
+  predict(model, train) %>%
+    bind_cols(.,train)-> train_scored 
+
+  predict(model, test, type="numeric") %>%
+    bind_cols(.,test)-> test_scored 
+  
+  # -- Metrics: Train and Test 
+  train_scored %>% 
+    mutate(part="train") %>%
+      bind_rows(test_scored %>% mutate(part = "test")) %>%
+    group_by(part) %>%
+    metrics(av_total, estimate = .pred) %>%
+    filter(.metric %in% c('rmse','rsq')) %>%
+    pivot_wider(names_from = .metric, values_from=.estimate) %>%
+    print()
+
+}
+  
+regression_eval(xgb_final_fit)
+regression_eval(rf_final_fit)
+```
+
+```{r}
+predict(xgb_final_fit, holdout) %>%
+  bind_cols(.,holdout %>% select(pid)) %>%
+  select(pid, av_total = .pred)
+
+```
+

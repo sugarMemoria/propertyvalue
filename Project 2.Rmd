@@ -1,0 +1,718 @@
+---
+title: "Project 2"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Load Packages
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(skimr)
+library(vip)
+library(parallel)
+library(doParallel)
+library(xgboost)
+```
+
+# Load Initial Data
+
+```{r, warning=FALSE, message=FALSE}
+
+raw_data <- read_csv("../Project 2/boston_train.csv") %>%
+  clean_names()
+
+head(raw_data)
+
+zip_code <- read_csv("../Project 2/zips.csv")
+
+head(zip_code)
+
+holdout <- read_csv("../Project 2/boston_holdout.csv") %>%
+  clean_names()
+
+
+```
+
+#  First Skim
+
+```{r}
+# raw_data %>%
+#   skim_without_charts()
+```
+
+after skimming,
+PID, ZIPCODE should be transformed into categorical
+
+zip - already there
+we can just remove PID, ZIPCODE
+
+train - 33 variables
+holdout - 32 variables
+
+# Transformation and Merge
+
+```{r}
+raw_data$yr_built <- as.character(raw_data$yr_built)
+raw_data$yr_remod <- as.character(raw_data$yr_remod)
+
+holdout$yr_built <- as.character(holdout$yr_built)
+holdout$yr_remod <- as.character(holdout$yr_remod)
+
+raw_data %>%
+  select(-pid, -zipcode) %>%
+  mutate_if(is.character, factor) %>%
+  clean_names() -> raw_data
+
+raw_data %>%
+  skim_without_charts()
+
+holdout %>%
+  select(-pid, -zipcode) %>%
+  mutate_if(is.character, factor) %>%
+  clean_names() -> holdout
+
+holdout %>%
+  skim_without_charts()
+```
+# Summary
+
+## Numeric Summary
+
+```{r}
+
+# Defining the function
+my.num.summary <- function(x){
+  c(n=NROW(x),
+    Distinct=n_distinct(x),
+    Mean=mean(x),
+    SD=sd(x),
+    Median=median(x),
+    Min=min(x),
+    Max=max(x), 
+    "# Missing"=n_missing(x),
+    "% Missing"=n_missing(x)/NROW(x)
+    )
+  }
+
+# identifying numeric columns
+num <- sapply(raw_data, is.numeric)
+
+# applying the function to numeric columns only
+num <- sapply(raw_data[, num], my.num.summary)
+
+# transpose
+num_summary <- as.data.frame(t(num))
+
+htmlTable::htmlTable(num_summary)
+
+```
+
+## Categorical summary
+
+```{r}
+my.cat.summary <- function(x){
+  c(Datatype=class(x),
+    n=NROW(x),
+    Distinct=n_distinct(x),
+    "Pct Distinct"=n_distinct(x)/NROW(x),
+    "# Missing"=n_missing(x),
+    "% Missing"=n_missing(x)/NROW(x)
+    )
+}
+
+cat <- sapply(raw_data, is.factor)
+
+cat <- sapply(raw_data[, cat], my.cat.summary)
+
+# transpose
+cat_summary <- as.data.frame(t(cat))
+
+htmlTable::htmlTable(cat_summary)
+```
+
+# target summary
+
+```{r}
+options(scipen = 999)
+raw_data %>%
+  group_by(av_total) %>%
+  summarise(n=n()) %>%
+  ungroup() %>%
+  ggplot(aes(av_total)) +
+  geom_histogram(bins = 30) +
+  labs(title="target distribution")
+```
+
+
+
+# exploration
+
+```{r}
+# OWN_OCC
+raw_data %>%
+  group_by(own_occ, av_total) %>%
+  summarise(n=n()) %>%
+  ggplot(aes(av_total,fill=own_occ)) +
+  geom_histogram(bins=30) +
+  labs(title="Does owner-occupied homes have a higher assessed value")
+
+# YEAR_REMOD
+raw_data %>%
+  ggplot(aes(yr_remod,av_total)) +
+  geom_point() +
+  labs(title="Does year remod impact assessed value") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.4))
+
+```
+
+# Initial screening and exploration
+
+```{r}
+# living area
+raw_data %>%
+  ggplot(aes(living_area, av_total)) +
+  geom_point() +
+  labs(title="bigger living area leads to higher value")
+
+# land_sf
+raw_data %>%
+  ggplot(aes(land_sf, av_total)) +
+  geom_point() +
+  labs(title="Parcel’s land area have little impact on value")
+
+# total_rooms
+raw_data %>%
+  ggplot(aes(r_total_rms, av_total)) +
+  geom_point() +
+  labs(title="Total rooms count slightly impact value")
+
+# overall condition
+raw_data %>%
+  group_by(r_ovrall_cnd) %>%
+  summarize(avg = mean(av_total),
+            median = median(av_total))
+
+# median income
+raw_data %>%
+  ggplot(aes(median_income, av_total)) +
+  geom_point() +
+  labs(title="does median income affect value?")
+```
+
+
+# Split and Defline K-fold
+
+here we want to split our data into 70/30 training to test 
+THEN apply k-fold to our training data
+you'll use the kfold grid search to find optimal parameters, which you will then apply a final fit 
+
+
+```{r}
+# -- set a random seed for repeatablity 
+# set.seed(123)
+# 
+# # -- train test split 
+# train_test_spit<- initial_split(raw_data, prop = 0.7)
+# 
+# train <- training(train_test_spit)
+# test  <- testing(train_test_spit)
+# 
+# # -- k-fold your training data 
+# train_cv_folds <- vfold_cv(train, v=10)
+# 
+# 
+# sprintf("Train PCT  : %1.2f%%", nrow(train)/ nrow(raw_data) * 100)
+# sprintf("Test  PCT  : %1.2f%%", nrow(test)/ nrow(raw_data) * 100)
+# sprintf("Kfold Count: %d", nrow(train_cv_folds))
+
+
+```
+
+
+
+# Define recipe
+
+```{r}
+
+# bos_recipe <- 
+#   recipe(av_total ~ ., data=train) %>%
+#   # step_rm(pid) %>%
+#   step_medianimpute(all_numeric(), -all_outcomes()) %>%
+#   step_novel(all_nominal(), -all_outcomes()) %>%
+#   step_unknown(all_nominal(), -all_outcomes()) %>%
+#   step_dummy(all_nominal(), -all_outcomes())
+
+```
+
+# Define models
+for both XGB and RF
+
+```{r}
+# xgb_model <- boost_tree(
+#   mtry = tune(),
+#   trees  = tune(),
+#   min_n = tune(),
+#   learn_rate = tune()
+#   ) %>% 
+#     set_engine("xgboost") %>% 
+#     set_mode("regression")
+# 
+# rf_model <- rand_forest(
+#   trees = tune(),
+#   min_n = tune()
+#   ) %>%
+#   set_engine("ranger", importance = "permutation") %>%
+#   set_mode("regression")
+```
+
+# Man learning 
+xD
+
+```{r}
+# xgb_model <- boost_tree(
+#   mtry = 20,
+#   trees  = 1000,
+#   min_n = 7,
+#   learn_rate = 0.05
+#   ) %>% 
+#     set_engine("xgboost") %>% 
+#     set_mode("regression")
+# 
+# xgb_workflow <- workflow() %>%
+#   add_recipe(bos_recipe) %>%
+#   add_model(xgb_model)
+# 
+# xgb_final_wf <- xgb_workflow
+#   # finalize_workflow(xgb_best)
+# 
+# xgb_final_fit <- xgb_final_wf %>%
+#   fit(train)
+# 
+# # score
+# predict(xgb_final_fit, train) %>%
+#   bind_cols(., train) -> train_scored_xgb
+# 
+# predict(xgb_final_fit, test, type="numeric") %>%
+#   bind_cols(.,test) -> test_scored_xgb
+# 
+# # Metrics: Train and Test 
+# train_scored_xgb %>%
+#   mutate(part="train") %>%
+#   bind_rows(test_scored_xgb %>%
+#               mutate(part = "test")) %>%
+#   group_by(part) %>%
+#   metrics(av_total, estimate = .pred) %>%
+#   filter(.metric %in% c('rmse','rsq')) %>%
+#   pivot_wider(names_from = .metric, values_from=.estimate) %>%
+#   print()
+```
+
+
+# Define workflows
+
+```{r}
+# xgb_workflow <- workflow() %>%
+#   add_recipe(bos_recipe) %>%
+#   add_model(xgb_model)
+# 
+# rf_workflow <- workflow() %>%
+#   add_recipe(bos_recipe) %>%
+#   add_model(rf_model)
+```
+
+# set up tuning grids
+
+```{r}
+# --  xgb grid
+# xgb_tune_grid <- grid_regular(mtry(c(16,20)),
+#                               trees(c(1000,1000)),
+#                               min_n(c(6,10)),
+#                               learn_rate(c(-2,-2)),
+#                               levels = 5)
+# 
+# print(xgb_tune_grid)
+# 
+# # -- rf grid 
+# rf_tune_grid <- grid_regular(trees(c(1000,1000)),
+#                              min_n(),
+#                              levels = 5)
+# 
+# print(rf_tune_grid)
+```
+
+# Kick the fit off with parallel computation
+
+```{r, warning=FALSE}
+# all_cores <- detectCores(logical = TRUE)
+# sprintf("# of Logical Cores: %d", all_cores)
+# 
+# cl <- makeCluster(all_cores)
+# 
+# registerDoParallel(cl)
+# 
+# # -- XGB
+# xgb_tuning_results <- xgb_workflow %>%
+#   tune_grid(
+#     resamples = train_cv_folds,
+#     grid = xgb_tune_grid
+#   )
+# 
+# # -- rf
+# rf_tuning_results <- rf_workflow %>%
+#   tune_grid(
+#     resamples = train_cv_folds,
+#     grid = rf_tune_grid
+#   )
+```
+
+# collect and prepare for eval
+
+```{r}
+
+# -- xgb
+
+# xgb_tuning_results %>%
+#   collect_metrics() %>%
+#   mutate_if(is.numeric, round, 3)
+# 
+# xgb_tuning_results %>%
+#   show_best("rmse") %>%
+#   print()
+# 
+# # -- rf
+# 
+# rf_tuning_results %>%
+#   collect_metrics() %>%
+#   mutate_if(is.numeric, round, 3)
+# 
+# rf_tuning_results %>%
+#   show_best("rmse") %>%
+#   print()
+```
+
+
+
+# Select the best and refit
+
+```{r, warning=FALSE}
+
+# -- xgb
+# xgb_tuning_results %>%
+#   show_best("rmse") %>%
+#   print()
+# 
+# xgb_best <- xgb_tuning_results %>%
+#   select_best("rmse")
+# 
+# xgb_final_wf <- xgb_workflow %>%
+#   finalize_workflow(xgb_best)
+# 
+# xgb_final_fit <- xgb_final_wf %>%
+#   fit(train)
+# 
+# # -- rf
+# rf_tuning_results %>%
+#   show_best("rmse")
+# 
+# rf_best <- rf_tuning_results %>%
+#   select_best("rmse")
+# 
+# rf_final_wf <- rf_workflow %>%
+#   finalize_workflow(rf_best)
+# 
+# rf_final_fit <- rf_final_wf %>%
+#   fit(train)
+```
+
+# evaluate
+
+```{r}
+# -- xgb
+# xgb_final_fit %>%
+#   pull_workflow_fit() %>%
+#   vip(n = 20)
+# 
+# # -- rf
+# rf_final_fit %>%
+#   pull_workflow_fit() %>%
+#   vip(n = 20)
+```
+
+```{r}
+# regression_eval <- function(model){
+# 
+# # -- score training  
+#   predict(model, train) %>%
+#     bind_cols(.,train)-> train_scored 
+# 
+#   predict(model, test, type="numeric") %>%
+#     bind_cols(.,test)-> test_scored 
+#   
+#   # -- Metrics: Train and Test 
+#   train_scored %>% 
+#     mutate(part="train") %>%
+#     bind_rows(test_scored %>% mutate(part = "test")) %>%
+#     group_by(part) %>%
+#     metrics(av_total, estimate = .pred) %>%
+#     filter(.metric %in% c('rmse','rsq')) %>%
+#     pivot_wider(names_from = .metric, values_from=.estimate) %>%
+#     print()
+# 
+# }
+#   
+# regression_eval(xgb_final_fit)
+# regression_eval(rf_final_fit)
+```
+1st run: learn_rate -> 0.100 is good, increase trees by 100 could lower mean by ~400
+2nd run: tree_depth close to 4 is good 
+3rd run: xgb -> min_n(30,40) mtry(15,20) rf -> min_n=2 mtry=20
+4th: mtry(16,20), learn rate(-2,-0.8) -> best 52334
+5rd: mtry(c(16,20)), min_n(c(6,10)), learn_rate(c(-2,-2))
+
+
+# predict holdout
+
+```{r}
+# predict(xgb_final_fit, holdout) %>%
+#   bind_cols(., holdout %>%
+#               select(pid)
+#             ) %>%
+#   select(pid, av_total=.pred) -> kaggle_submit
+# 
+# write_csv(kaggle_submit, "proj2_submission4.csv")
+```
+
+# Let's see what would happen if I follow every bit of details in the sample code ...
+
+a few things here:
+I dont see the yr_remod is categorical - numeric does not make sense
+why would tuning 2 parameters yield a far better result than tuning 4 to 5?
+
+```{r}
+
+# load the data, clean the names, make factors 
+
+df <-read_csv("../Project 2/boston_train.csv") %>%
+  clean_names() %>%
+  mutate_if(is.character,factor)
+
+holdout <-read_csv("../Project 2/boston_holdout.csv") %>%
+  clean_names() %>%
+  mutate_if(is.character,factor)
+
+# -- set a random seed for repeatablity 
+set.seed(42)
+
+# -- train test split 
+train_test_spit<- initial_split(df, prop = 0.7)
+
+train <- training(train_test_spit)
+test  <- testing(train_test_spit)
+
+# -- k-fold your training data 
+train_cv_folds <- vfold_cv(train, v=5)
+
+sprintf("Train PCT  : %1.2f%%", nrow(train)/ nrow(df) * 100)
+sprintf("Test  PCT  : %1.2f%%", nrow(test)/ nrow(df) * 100)
+sprintf("Kfold Count: %d", nrow(train_cv_folds))
+
+
+# -- define recipe 
+bos_recipe <- 
+  recipe(av_total ~ ., data=train) %>%
+  step_rm(pid) %>%
+  step_medianimpute(all_numeric(), -all_outcomes()) %>%
+  step_unknown(all_nominal(), -all_outcomes()) %>%
+  step_dummy(all_nominal(), -all_outcomes())
+
+# -- define models 
+xgb_model <- boost_tree(
+    trees  = tune(),
+    learn_rate = tune()) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+rf_model <- rand_forest(
+  trees = tune(),
+  min_n = tune()) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("regression")
+
+# -- define workflows 
+xgb_workflow <- workflow() %>%
+  add_recipe(bos_recipe) %>%
+  add_model(xgb_model)
+
+rf_workflow <- workflow() %>%
+  add_recipe(bos_recipe)  %>%
+  add_model(rf_model)
+
+# --  xgb grid
+xgb_tune_grid <- grid_regular(trees(c(100,1000)),
+                              learn_rate(),
+                              levels = 10)
+
+print(xgb_tune_grid)
+
+# -- rf grid 
+rf_tune_grid <- grid_regular(trees(c(100,1000)),
+                          min_n(),
+                          levels = 5)
+
+print(rf_tune_grid)
+
+all_cores <- detectCores(logical = TRUE)
+sprintf("# of Logical Cores: %d", all_cores)
+
+cl <- makeCluster(all_cores)
+
+registerDoParallel(cl)
+
+# -- K-Fold XGB  
+xgb_tuning_results <- 
+  xgb_workflow %>% 
+  tune_grid(
+    resamples = train_cv_folds,
+    grid = xgb_tune_grid,
+    #control = control_resamples(save_pred = TRUE)
+    )
+
+# -- k-fold RF
+rf_tuning_results <- 
+  rf_workflow %>% 
+  tune_grid(
+    resamples = train_cv_folds,
+    grid = rf_tune_grid,
+    #control = control_resamples(save_pred = TRUE)
+    )
+
+
+# -- evaluate your Hyper Parameter K-Folds
+xgb_tuning_results %>% 
+  collect_metrics() %>%
+  mutate_if(is.numeric, round,3) %>% 
+  pivot_wider(names_from = .metric, values_from=c(mean, std_err)) 
+  
+xgb_tuning_results %>%
+  show_best("rmse") %>%
+  print()
+
+xgb_best_rmse <- xgb_tuning_results %>%
+  select_best("rmse") 
+
+rf_tuning_results %>% 
+  collect_metrics() %>%
+  mutate_if(is.numeric, round,3) %>% 
+  pivot_wider(names_from = .metric, values_from=c(mean, std_err)) 
+
+rf_tuning_results %>%
+  show_best("rmse") %>%
+  print()
+
+rf_best_rmse <- rf_tuning_results %>%
+  select_best("rmse") 
+
+print(xgb_best_rmse)
+print(rf_best_rmse)
+
+# -- finalize XBG workflow 
+xgb_final_wf <- 
+  xgb_workflow %>% 
+  finalize_workflow(xgb_best_rmse)
+
+xgb_final_fit  <- 
+  xgb_final_wf %>%
+  fit(data = train) 
+
+# -- finalize RF workflow 
+rf_final_wf <- 
+  rf_workflow %>% 
+  finalize_workflow(rf_best_rmse)
+
+rf_final_fit  <- 
+  rf_final_wf %>%
+  fit(data = train) 
+
+xgb_final_fit %>% 
+  pull_workflow_fit() %>% 
+  vip(40) + labs(title = "XGB var importance")
+
+rf_final_fit %>% 
+  pull_workflow_fit() %>% 
+  vip(40)+ labs(title = "RF var importance")
+
+regression_eval <- function(model){
+
+# -- score training  
+  predict(model, train) %>%
+    bind_cols(.,train)-> train_scored 
+
+  predict(model, test, type="numeric") %>%
+    bind_cols(.,test)-> test_scored 
+  
+  # -- Metrics: Train and Test 
+  train_scored %>% 
+    mutate(part="train") %>%
+      bind_rows(test_scored %>% mutate(part = "test")) %>%
+    group_by(part) %>%
+    metrics(av_total, estimate = .pred) %>%
+    filter(.metric %in% c('rmse','rsq')) %>%
+    pivot_wider(names_from = .metric, values_from=.estimate) %>%
+    print()
+
+}
+  
+regression_eval(xgb_final_fit)
+regression_eval(rf_final_fit)
+
+
+predict(xgb_final_fit, holdout) %>%
+  bind_cols(.,holdout %>% select(pid)) %>%
+  select(pid, av_total = .pred) -> sample_submission
+
+write_csv(sample_submission, "sample_submission2.csv")
+```
+
+sample submission gives us 51728 on Kaggle - super confusing...
+
+xgb_tune_grid <- grid_regular(trees(c(100,1000)),
+                          learn_rate(),
+                          levels = 5) -> 50272
+                          
+xgb_tune_grid <- grid_regular(trees(c(100,1000)),
+                          min_n(),
+                          learn_rate(),
+                          levels = 5) -> 49799 BAD KAGGLE
+
+xgb_tune_grid <- grid_regular(trees(c(100,1000)),
+                              tree_depth(),
+                              learn_rate(),
+                              levels = 10) -> 49727 BAD KAGGLE
+
+# predictions file
+
+for regression problems we want to compare histograms of predicted vs actual av_total 
+they should have same / similar shape.
+
+```{r}
+options(scipen = 999)
+df %>%
+  ggplot(aes(av_total)) +
+  geom_histogram(bins = 50) +
+  labs(title="actual total value histogram")
+
+sample_submission %>%
+  ggplot(aes(av_total)) +
+  geom_histogram(bins = 50) +
+  labs(title="predicted value histogram")
+```
+
+
+
+
+
+
